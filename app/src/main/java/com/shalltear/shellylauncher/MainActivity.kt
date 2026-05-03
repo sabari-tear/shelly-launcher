@@ -101,6 +101,30 @@ fun drawableToBitmap(drawable: Drawable, size: Int = 96): Bitmap {
     return bitmap
 }
 
+fun createLightUpIcon(): Bitmap {
+    val size = 128
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bitmap)
+    val paint = android.graphics.Paint().apply {
+        color = android.graphics.Color.parseColor("#FFD700") // Gold
+        isAntiAlias = true
+    }
+    canvas.drawCircle(size / 2f, size / 2f, size / 2.1f, paint)
+    
+    val iconPaint = android.graphics.Paint().apply {
+        color = android.graphics.Color.WHITE
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = 8f
+    }
+    canvas.drawCircle(size / 2f, size / 2f, size / 4f, iconPaint)
+    canvas.drawLine(size / 2f, size / 4f, size / 2f, size / 8f, iconPaint)
+    canvas.drawLine(size / 2f, size * 3/4f, size / 2f, size * 7/8f, iconPaint)
+    canvas.drawLine(size / 4f, size / 2f, size / 8f, size / 2f, iconPaint)
+    canvas.drawLine(size * 3/4f, size / 2f, size * 7/8f, size / 2f, iconPaint)
+    return bitmap
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,11 +148,21 @@ fun LauncherScreen() {
     // Use MutableState to avoid recompositions. Read only inside graphicsLayer and onDrag
     val fingerPosition = remember { mutableStateOf(Offset(-1000f, -1000f)) }
     val selectedIndex = remember { mutableIntStateOf(-1) }
+    val isLightUpMode = remember { mutableStateOf(false) }
 
     // Load apps on startup
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            apps = loadInstalledApps(context)
+            val loadedApps = loadInstalledApps(context).toMutableList()
+            val lightUpApp = AppInfo(
+                name = "Light Up",
+                packageName = "com.shelly.lightup",
+                icon = createLightUpIcon(),
+                launchIntent = null
+            )
+            val mid = loadedApps.size / 2
+            loadedApps.add(mid, lightUpApp)
+            apps = loadedApps
         }
     }
 
@@ -190,6 +224,7 @@ fun LauncherScreen() {
                     onDragStart = { offset ->
                         fingerPosition.value = offset
                         isAppsVisible = true
+                        isLightUpMode.value = false
                         
                         var closestIdx = -1
                         var minDist = Float.MAX_VALUE
@@ -221,19 +256,27 @@ fun LauncherScreen() {
                         val newSelection = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
                         if (selectedIndex.intValue != newSelection) {
                             selectedIndex.intValue = newSelection
+                            if (newSelection != -1 && apps.getOrNull(newSelection)?.packageName == "com.shelly.lightup") {
+                                isLightUpMode.value = true
+                            }
                         }
                     },
                     onDragEnd = {
                         isAppsVisible = false
+                        isLightUpMode.value = false
                         val idx = selectedIndex.intValue
                         if (idx != -1) {
-                            apps.getOrNull(idx)?.launchIntent?.let { intent ->
-                                context.startActivity(intent)
+                            val app = apps.getOrNull(idx)
+                            if (app?.packageName != "com.shelly.lightup") {
+                                app?.launchIntent?.let { intent ->
+                                    context.startActivity(intent)
+                                }
                             }
                         }
                     },
                     onDragCancel = {
                         isAppsVisible = false
+                        isLightUpMode.value = false
                     }
                 )
             }
@@ -249,6 +292,7 @@ fun LauncherScreen() {
                         fingerPosition = fingerPosition,
                         isAppsVisible = isAppsVisible,
                         selectedIndex = selectedIndex,
+                        isLightUpMode = isLightUpMode,
                         hexRadiusPx = hexRadiusPx
                     )
                 }
@@ -296,6 +340,7 @@ fun AppItem(
     fingerPosition: State<Offset>,
     isAppsVisible: Boolean,
     selectedIndex: State<Int>,
+    isLightUpMode: State<Boolean>,
     hexRadiusPx: Float
 ) {
     val isSelected = selectedIndex.value == index
@@ -322,9 +367,11 @@ fun AppItem(
 
                 // Spotlight Alpha mask
                 val spotlightRadius = hexRadiusPx * 4f
-                alpha = if (dist > spotlightRadius) 0f else {
-                    val fade = 1f - (dist / spotlightRadius)
-                    fade * fade * (3f - 2f * fade) // Smooth curve
+                alpha = if (isLightUpMode.value) 1f else {
+                    if (dist > spotlightRadius) 0f else {
+                        val fade = 1f - (dist / spotlightRadius)
+                        fade * fade * (3f - 2f * fade) // Smooth curve
+                    }
                 }
 
                 // Repulsion Physics
