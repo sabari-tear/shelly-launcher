@@ -3,43 +3,40 @@ package com.shalltear.shellylauncher
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.drawable.Drawable
-import android.os.Bundle
 import android.os.Build
+import android.os.Bundle
 import android.content.pm.PackageManager
-import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.expandVertically
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,24 +46,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.max
 
 data class AppInfo(
     val name: String,
@@ -110,7 +110,7 @@ fun loadInstalledApps(context: Context): List<AppInfo> {
 
 fun drawableToBitmap(drawable: Drawable, size: Int = 96): Bitmap {
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
+    val canvas = android.graphics.Canvas(bitmap)
     drawable.setBounds(0, 0, size, size)
     drawable.draw(canvas)
     return bitmap
@@ -125,141 +125,159 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun LauncherScreen() {
     val context = LocalContext.current
-    val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
-    val drawerGridState = rememberLazyGridState()
-
-    var showApps by remember { mutableStateOf(false) }
-    var currentPos by remember { mutableStateOf(Offset.Zero) }
+    
     var apps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
-    var selectedIndex by remember { mutableStateOf(-1) }
-    var autoScrollDirection by remember { mutableStateOf(0) }
-    // Use an array as a mutable ref to avoid spurious recompositions
-    val longPressJobRef = remember { arrayOfNulls<Job>(1) }
+    var isAppsVisible by remember { mutableStateOf(false) }
+    var fingerPosition by remember { mutableStateOf(Offset.Zero) }
+    var glowCenter by remember { mutableStateOf(Offset.Zero) }
+    var itemBounds by remember { mutableStateOf(mapOf<Int, Rect>()) }
+    var selectedIndex by remember { mutableStateOf<Int?>(null) }
+    
+    val gridState = rememberLazyGridState()
+    val density = LocalDensity.current
 
-    val minCellWidthDp = 86.dp
-    val cellHeightDp = 104.dp
-    val edgeZonePx = with(density) { 84.dp.toPx() }
-    val autoScrollStepPx = with(density) { 20.dp.toPx() }
+    // Load apps on startup
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            apps = loadInstalledApps(context)
+        }
+    }
 
-    BoxWithConstraints(
+    // Determine selected app based on finger position
+    LaunchedEffect(fingerPosition, isAppsVisible, itemBounds) {
+        if (!isAppsVisible) {
+            selectedIndex = null
+        } else {
+            // Find the item whose bounds contain the finger position
+            val matchedIndex = itemBounds.entries.firstOrNull { it.value.contains(fingerPosition) }?.key
+            if (matchedIndex != selectedIndex) {
+                selectedIndex = matchedIndex
+            }
+        }
+    }
+
+    // Auto-scroll logic
+    LaunchedEffect(isAppsVisible) {
+        while (isAppsVisible) {
+            val y = fingerPosition.y
+            val screenHeight = with(density) { context.resources.displayMetrics.heightPixels.toFloat() }
+            val edgeThreshold = screenHeight * 0.15f // Top/Bottom 15% of screen
+            
+            val scrollSpeed = 25f
+            if (y > 0 && y < edgeThreshold) {
+                gridState.scrollBy(-scrollSpeed)
+            } else if (y > screenHeight - edgeThreshold) {
+                gridState.scrollBy(scrollSpeed)
+            }
+            delay(16) // ~60fps
+        }
+    }
+
+    // Animation for glow
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (isAppsVisible) 0.6f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "glowAlpha"
+    )
+    val glowRadius by animateFloatAsState(
+        targetValue = if (isAppsVisible) 1000f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow),
+        label = "glowRadius"
+    )
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-    ) {
-        val containerHeightPx = with(density) { maxHeight.toPx() }
-        val containerWidthPx = with(density) { maxWidth.toPx() }
-        val minCellWidthPx = with(density) { minCellWidthDp.toPx() }
-        val cellHeightPx = with(density) { cellHeightDp.toPx() }
-        val columns = max(1, (containerWidthPx / minCellWidthPx).toInt())
-        val cellWidthPx = containerWidthPx / columns
-
-        fun updateSelectionFromFinger() {
-            if (!showApps || apps.isEmpty()) {
-                selectedIndex = -1
-                return
-            }
-            val rowOffset = drawerGridState.firstVisibleItemIndex / columns
-            val absoluteY = currentPos.y +
-                rowOffset * cellHeightPx +
-                drawerGridState.firstVisibleItemScrollOffset
-            val row = (absoluteY / cellHeightPx).toInt().coerceAtLeast(0)
-            val col = (currentPos.x / cellWidthPx).toInt().coerceIn(0, columns - 1)
-            val idx = row * columns + col
-            selectedIndex = idx.coerceIn(0, apps.lastIndex)
-        }
-
-        LaunchedEffect(showApps, autoScrollDirection, columns) {
-            if (!showApps || autoScrollDirection == 0) return@LaunchedEffect
-            // Continue scrolling while finger stays near the top/bottom edge.
-            while (showApps && autoScrollDirection != 0) {
-                drawerGridState.scrollBy(autoScrollDirection * autoScrollStepPx)
-                updateSelectionFromFinger()
-                delay(16L)
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInteropFilter { event ->
-                    when (event.action) {
-                        MotionEvent.ACTION_DOWN -> {
-                            longPressJobRef[0]?.cancel()
-                            autoScrollDirection = 0
-                            selectedIndex = -1
-                            currentPos = Offset(event.x, event.y)
-                            longPressJobRef[0] = coroutineScope.launch {
-                                delay(500L)
-                                val loadedApps = if (apps.isEmpty()) {
-                                    withContext(Dispatchers.IO) { loadInstalledApps(context) }
-                                } else {
-                                    apps
-                                }
-                                apps = loadedApps
-                                showApps = true
-                                updateSelectionFromFinger()
+            .pointerInput(Unit) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset ->
+                        glowCenter = offset
+                        fingerPosition = offset
+                        isAppsVisible = true
+                    },
+                    onDrag = { change, _ ->
+                        fingerPosition = change.position
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        isAppsVisible = false
+                        selectedIndex?.let { index ->
+                            apps.getOrNull(index)?.launchIntent?.let { intent ->
+                                context.startActivity(intent)
                             }
-                            true
                         }
-                        MotionEvent.ACTION_MOVE -> {
-                            currentPos = Offset(event.x, event.y)
-                            if (showApps) {
-                                autoScrollDirection = when {
-                                    currentPos.y < edgeZonePx -> -1
-                                    currentPos.y > (containerHeightPx - edgeZonePx) -> 1
-                                    else -> 0
-                                }
-                                updateSelectionFromFinger()
-                            }
-                            true
-                        }
-                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                            longPressJobRef[0]?.cancel()
-                            autoScrollDirection = 0
-                            if (showApps) {
-                                val idx = selectedIndex
-                                if (idx >= 0 && idx < apps.size) {
-                                    apps[idx].launchIntent?.let { intent ->
-                                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        context.startActivity(intent)
-                                    }
-                                }
-                                showApps = false
-                                selectedIndex = -1
-                            }
-                            true
-                        }
-                        else -> false
+                    },
+                    onDragCancel = {
+                        isAppsVisible = false
                     }
-                }
+                )
+            }
+    ) {
+        // Radial Glow Background
+        if (glowAlpha > 0f) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFFE0E0E0).copy(alpha = glowAlpha), Color.Transparent),
+                        center = glowCenter,
+                        radius = maxOf(glowRadius, 1f)
+                    ),
+                    radius = glowRadius,
+                    center = glowCenter
+                )
+            }
+        }
+
+        // App Grid
+        AnimatedVisibility(
+            visible = isAppsVisible,
+            enter = fadeIn(tween(300)),
+            exit = fadeOut(tween(300))
         ) {
-            if (showApps) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(columns),
-                    state = drawerGridState,
-                    modifier = Modifier
-                        .fillMaxWidth(0.94f)
-                        .fillMaxHeight(0.78f)
-                        .align(Alignment.Center)
-                        .background(Color(0xCC000000), RoundedCornerShape(24.dp))
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    userScrollEnabled = false,
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    columns = GridCells.Adaptive(minSize = 80.dp),
+                    state = gridState,
+                    contentPadding = PaddingValues(top = 160.dp, bottom = 40.dp, start = 16.dp, end = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(32.dp),
+                    modifier = Modifier.fillMaxSize()
                 ) {
                     itemsIndexed(apps, key = { _, app -> app.packageName }) { index, app ->
-                        AppDrawerItem(
+                        AppItem(
                             app = app,
                             isSelected = index == selectedIndex,
-                            height = cellHeightDp
+                            onPositioned = { rect ->
+                                // Update bounds for intersection testing
+                                val currentBounds = itemBounds.toMutableMap()
+                                currentBounds[index] = rect
+                                itemBounds = currentBounds
+                            }
                         )
                     }
+                }
+                
+                // Top App Name Display
+                val selectedApp = selectedIndex?.let { apps.getOrNull(it) }
+                if (selectedApp != null) {
+                    Text(
+                        text = selectedApp.name,
+                        color = Color.White,
+                        fontSize = 36.sp,
+                        fontWeight = FontWeight.Light,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 64.dp, start = 24.dp, end = 24.dp)
+                            .align(Alignment.TopCenter)
+                    )
                 }
             }
         }
@@ -267,44 +285,40 @@ fun LauncherScreen() {
 }
 
 @Composable
-fun AppDrawerItem(
+fun AppItem(
     app: AppInfo,
     isSelected: Boolean,
-    height: androidx.compose.ui.unit.Dp
+    onPositioned: (Rect) -> Unit
 ) {
-    val iconSize by animateDpAsState(
-        targetValue = if (isSelected) 62.dp else 54.dp,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-        label = "iconSize"
-    )
-    val cardScale by animateFloatAsState(
-        targetValue = if (isSelected) 1.08f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
-        label = "cardScale"
-    )
-    val tileColor by animateColorAsState(
-        targetValue = if (isSelected) Color(0x33FFFFFF) else Color.Transparent,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "tileColor"
+    // Animate scale. 1.5f as requested.
+    val scale by animateFloatAsState(
+        targetValue = if (isSelected) 1.5f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "iconScale"
     )
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .fillMaxWidth()
-            .height(height)
-            .graphicsLayer {
-                scaleX = cardScale
-                scaleY = cardScale
+            .onGloballyPositioned { coordinates ->
+                onPositioned(coordinates.boundsInRoot())
             }
-            .background(tileColor, RoundedCornerShape(12.dp))
-            .padding(horizontal = 8.dp, vertical = 10.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                // Slight translation upward when selected for better visibility under finger
+                translationY = if (isSelected) -20f else 0f
+            }
     ) {
         Box(
             modifier = Modifier
-                .size(iconSize)
-                .background(Color(0x30FFFFFF), RoundedCornerShape(10.dp))
-                .padding(6.dp),
+                .size(60.dp)
+                .background(Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
+                .padding(8.dp),
             contentAlignment = Alignment.Center
         ) {
             Image(
@@ -313,16 +327,18 @@ fun AppDrawerItem(
                 modifier = Modifier.fillMaxSize()
             )
         }
+        // Minimalist label under icon, hidden when scaled up since big header shows it
         AnimatedVisibility(
-            visible = isSelected,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            visible = !isSelected,
+            enter = fadeIn(),
+            exit = fadeOut()
         ) {
             Text(
                 text = app.name,
-                color = Color.White,
+                color = Color(0x99FFFFFF),
+                fontSize = 11.sp,
                 textAlign = TextAlign.Center,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
