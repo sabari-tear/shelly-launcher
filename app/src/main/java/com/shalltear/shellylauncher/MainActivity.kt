@@ -149,6 +149,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        setContent {
+            LauncherScreen()
+        }
+        
+        // Set window colors after setContent
         window.statusBarColor = android.graphics.Color.BLACK
         window.navigationBarColor = android.graphics.Color.BLACK
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -156,10 +161,6 @@ class MainActivity : ComponentActivity() {
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
-        }
-        
-        setContent {
-            LauncherScreen()
         }
     }
 }
