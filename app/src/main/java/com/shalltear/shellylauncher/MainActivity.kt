@@ -18,7 +18,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -144,11 +146,11 @@ fun LauncherScreen() {
     var hexRadiusPx by remember { mutableStateOf(100f) }
 
     var isAppsVisible by remember { mutableStateOf(false) }
+    var isLightUpMode by remember { mutableStateOf(false) }
     
     // Use MutableState to avoid recompositions. Read only inside graphicsLayer and onDrag
     val fingerPosition = remember { mutableStateOf(Offset(-1000f, -1000f)) }
     val selectedIndex = remember { mutableIntStateOf(-1) }
-    val isLightUpMode = remember { mutableStateOf(false) }
 
     // Load apps on startup
     LaunchedEffect(Unit) {
@@ -220,65 +222,109 @@ fun LauncherScreen() {
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(appPositions, hexRadiusPx) { // Re-bind if positions change
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { offset ->
-                        fingerPosition.value = offset
-                        isAppsVisible = true
-                        isLightUpMode.value = false
-                        
-                        var closestIdx = -1
-                        var minDist = Float.MAX_VALUE
-                        appPositions.forEachIndexed { i, pos ->
-                            val dist = (pos - offset).getDistance()
-                            if (dist < minDist) {
-                                minDist = dist
-                                closestIdx = i
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+
+                    if (isAppsVisible && isLightUpMode) {
+                        val up = waitForUpOrCancellation()
+                        if (up != null) {
+                            var closestIdx = -1
+                            var minDist = Float.MAX_VALUE
+                            appPositions.forEachIndexed { i, pos ->
+                                val dist = (pos - up.position).getDistance()
+                                if (dist < minDist) {
+                                    minDist = dist
+                                    closestIdx = i
+                                }
                             }
-                        }
-                        selectedIndex.intValue = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
-                    },
-                    onDrag = { change, _ ->
-                        val pos = change.position
-                        fingerPosition.value = pos
-                        change.consume()
-                        
-                        // Extremely fast selection calculation without recomposition
-                        var closestIdx = -1
-                        var minDist = Float.MAX_VALUE
-                        appPositions.forEachIndexed { i, p ->
-                            val dist = (p - pos).getDistance()
-                            if (dist < minDist) {
-                                minDist = dist
-                                closestIdx = i
-                            }
-                        }
-                        
-                        val newSelection = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
-                        if (selectedIndex.intValue != newSelection) {
-                            selectedIndex.intValue = newSelection
-                            if (newSelection != -1 && apps.getOrNull(newSelection)?.packageName == "com.shelly.lightup") {
-                                isLightUpMode.value = true
-                            }
-                        }
-                    },
-                    onDragEnd = {
-                        isAppsVisible = false
-                        isLightUpMode.value = false
-                        val idx = selectedIndex.intValue
-                        if (idx != -1) {
-                            val app = apps.getOrNull(idx)
-                            if (app?.packageName != "com.shelly.lightup") {
-                                app?.launchIntent?.let { intent ->
-                                    context.startActivity(intent)
+                            if (minDist < hexRadiusPx * 1.5f) {
+                                val app = apps.getOrNull(closestIdx)
+                                if (app?.packageName == "com.shelly.lightup") {
+                                    isAppsVisible = false
+                                    isLightUpMode = false
+                                } else {
+                                    app?.launchIntent?.let { intent ->
+                                        context.startActivity(intent)
+                                    }
+                                    isAppsVisible = false
+                                    isLightUpMode = false
                                 }
                             }
                         }
-                    },
-                    onDragCancel = {
-                        isAppsVisible = false
-                        isLightUpMode.value = false
+                        return@awaitEachGesture
                     }
-                )
+
+                    // Not in light up mode, detect long press manually
+                    var longPressDetected = false
+                    try {
+                        withTimeout(400L) {
+                            var isDown = true
+                            while (isDown) {
+                                val event = awaitPointerEvent()
+                                if (event.changes.any { !it.pressed }) {
+                                    isDown = false
+                                }
+                            }
+                        }
+                    } catch (e: androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException) {
+                        longPressDetected = true
+                    }
+
+                    if (longPressDetected) {
+                        fingerPosition.value = down.position
+                        isAppsVisible = true
+                        isLightUpMode = false
+
+                        var isDragging = true
+                        while (isDragging) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull()
+                            if (change != null) {
+                                val pos = change.position
+                                fingerPosition.value = pos
+                                change.consume()
+
+                                var closestIdx = -1
+                                var minDist = Float.MAX_VALUE
+                                appPositions.forEachIndexed { i, p ->
+                                    val dist = (p - pos).getDistance()
+                                    if (dist < minDist) {
+                                        minDist = dist
+                                        closestIdx = i
+                                    }
+                                }
+
+                                val newSelection = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
+                                if (selectedIndex.intValue != newSelection) {
+                                    selectedIndex.intValue = newSelection
+                                }
+
+                                if (!change.pressed) {
+                                    isDragging = false
+                                }
+                            } else {
+                                isDragging = false
+                            }
+                        }
+
+                        // Drag ended
+                        val finalIdx = selectedIndex.intValue
+                        if (finalIdx != -1) {
+                            val app = apps.getOrNull(finalIdx)
+                            if (app?.packageName == "com.shelly.lightup") {
+                                isLightUpMode = true
+                                selectedIndex.intValue = -1
+                            } else {
+                                app?.launchIntent?.let { intent ->
+                                    context.startActivity(intent)
+                                }
+                                isAppsVisible = false
+                            }
+                        } else {
+                            isAppsVisible = false
+                        }
+                    }
+                }
             }
     ) {
         // App Grid - Honeycomb
@@ -300,7 +346,7 @@ fun LauncherScreen() {
         }
 
         // Top App Name Display
-        AppNameHeader(apps = apps, selectedIndex = selectedIndex, isVisible = isAppsVisible)
+        AppNameHeader(apps = apps, selectedIndex = selectedIndex, isVisible = isAppsVisible && !isLightUpMode)
     }
 }
 
@@ -340,7 +386,7 @@ fun AppItem(
     fingerPosition: State<Offset>,
     isAppsVisible: Boolean,
     selectedIndex: State<Int>,
-    isLightUpMode: State<Boolean>,
+    isLightUpMode: Boolean,
     hexRadiusPx: Float
 ) {
     val isSelected = selectedIndex.value == index
@@ -362,16 +408,23 @@ fun AppItem(
                     return@graphicsLayer
                 }
 
+                if (isLightUpMode) {
+                    alpha = 1f
+                    translationX = basePos.x - hexRadiusPx
+                    translationY = basePos.y - hexRadiusPx
+                    scaleX = 1f
+                    scaleY = 1f
+                    return@graphicsLayer
+                }
+
                 val fingerPos = fingerPosition.value
                 val dist = (basePos - fingerPos).getDistance()
 
                 // Spotlight Alpha mask
                 val spotlightRadius = hexRadiusPx * 4f
-                alpha = if (isLightUpMode.value) 1f else {
-                    if (dist > spotlightRadius) 0f else {
-                        val fade = 1f - (dist / spotlightRadius)
-                        fade * fade * (3f - 2f * fade) // Smooth curve
-                    }
+                alpha = if (dist > spotlightRadius) 0f else {
+                    val fade = 1f - (dist / spotlightRadius)
+                    fade * fade * (3f - 2f * fade) // Smooth curve
                 }
 
                 // Repulsion Physics
