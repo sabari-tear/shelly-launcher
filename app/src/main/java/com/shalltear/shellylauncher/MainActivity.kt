@@ -27,14 +27,22 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -143,6 +151,16 @@ fun createLightUpIcon(): Bitmap {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        window.statusBarColor = android.graphics.Color.BLACK
+        window.navigationBarColor = android.graphics.Color.BLACK
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.setSystemBarsAppearance(0, android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        }
+        
         setContent {
             LauncherScreen()
         }
@@ -160,6 +178,7 @@ fun LauncherScreen() {
 
     var isAppsVisible by remember { mutableStateOf(false) }
     var isLightUpMode by remember { mutableStateOf(false) }
+    var isSettingsVisible by remember { mutableStateOf(false) }
     
     // Use MutableState to avoid recompositions. Read only inside graphicsLayer and onDrag
     val fingerPosition = remember { mutableStateOf(Offset(-1000f, -1000f)) }
@@ -360,6 +379,78 @@ fun LauncherScreen() {
 
         // Top App Name Display
         AppNameHeader(apps = apps, selectedIndex = selectedIndex, isVisible = isAppsVisible && !isLightUpMode)
+
+        // Settings Button
+        IconButton(
+            onClick = {
+                isSettingsVisible = true
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 16.dp, end = 16.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Settings,
+                contentDescription = "Settings",
+                tint = Color(0x99FFFFFF), // Subtle translucent white
+                modifier = Modifier.size(28.dp)
+            )
+        }
+
+        // Launcher Settings Overlay
+        AnimatedVisibility(
+            visible = isSettingsVisible,
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(200))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .pointerInput(Unit) {
+                        // Consume all pointer events to prevent interacting with the launcher behind
+                        awaitEachGesture {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                    .padding(top = 48.dp, start = 24.dp, end = 24.dp, bottom = 24.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        IconButton(onClick = { isSettingsVisible = false }) {
+                            Text("✕", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Light)
+                        }
+                        Text(
+                            text = "Launcher Settings",
+                            color = Color.White,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Light,
+                            modifier = Modifier.padding(start = 16.dp)
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(48.dp))
+                    
+                    Button(
+                        onClick = {
+                            val intent = Intent(android.provider.Settings.ACTION_HOME_SETTINGS)
+                            context.startActivity(intent)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF222222)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                    ) {
+                        Text("Set as Default Launcher", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Normal)
+                    }
+                }
+            }
+        }
     }
 }
 
