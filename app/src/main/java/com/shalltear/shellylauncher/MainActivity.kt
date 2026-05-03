@@ -57,6 +57,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -177,6 +179,7 @@ fun LauncherScreen() {
     var isAppsVisible by remember { mutableStateOf(false) }
     var isLightUpMode by remember { mutableStateOf(false) }
     var isSettingsVisible by remember { mutableStateOf(false) }
+    var settingsPos by remember { mutableStateOf(Offset.Zero) }
     
     // Use MutableState to avoid recompositions. Read only inside graphicsLayer and onDrag
     val fingerPosition = remember { mutableStateOf(Offset(-1000f, -1000f)) }
@@ -386,6 +389,26 @@ fun LauncherScreen() {
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 16.dp, end = 16.dp)
+                .onGloballyPositioned { coordinates ->
+                    settingsPos = coordinates.boundsInRoot().center
+                }
+                .graphicsLayer {
+                    if (!isAppsVisible && !isLightUpMode) {
+                        alpha = 0f
+                        return@graphicsLayer
+                    }
+                    if (isLightUpMode) {
+                        alpha = 1f
+                        return@graphicsLayer
+                    }
+                    val fingerPos = fingerPosition.value
+                    val dist = (settingsPos - fingerPos).getDistance()
+                    val spotlightRadius = hexRadiusPx * 4f
+                    alpha = if (dist > spotlightRadius) 0f else {
+                        val fade = 1f - (dist / spotlightRadius)
+                        fade * fade * (3f - 2f * fade)
+                    }
+                }
         ) {
             Text(
                 text = "⚙",
