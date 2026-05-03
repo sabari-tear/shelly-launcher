@@ -28,8 +28,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,7 +49,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -117,34 +117,56 @@ fun LauncherScreen() {
 
     var apps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var appPositions by remember { mutableStateOf<List<Offset>>(emptyList()) }
-    var maxScroll by remember { mutableFloatStateOf(0f) }
+    var hexRadiusPx by remember { mutableStateOf(100f) }
 
     var isAppsVisible by remember { mutableStateOf(false) }
-    var fingerPosition by remember { mutableStateOf(Offset(-1000f, -1000f)) }
-    var scrollY by remember { mutableFloatStateOf(0f) }
-    var selectedIndex by remember { mutableStateOf<Int?>(null) }
-
-    val hexRadiusPx = with(density) { 38.dp.toPx() }
-    val hexWidth = sqrt(3f) * hexRadiusPx
-    val rowSpacing = 1.5f * hexRadiusPx
-    val colSpacing = hexWidth
+    
+    // Use MutableState to avoid recompositions. Read only inside graphicsLayer and onDrag
+    val fingerPosition = remember { mutableStateOf(Offset(-1000f, -1000f)) }
+    val selectedIndex = remember { mutableIntStateOf(-1) }
 
     // Load apps on startup
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            val loadedApps = loadInstalledApps(context)
-            apps = loadedApps
+            apps = loadInstalledApps(context)
         }
     }
 
-    // Calculate Honeycomb positions when apps or screen size changes
+    // Calculate Honeycomb positions to fit perfectly on screen
     LaunchedEffect(apps) {
         if (apps.isEmpty()) return@LaunchedEffect
+        
         val screenWidth = context.resources.displayMetrics.widthPixels.toFloat()
         val screenHeight = context.resources.displayMetrics.heightPixels.toFloat()
-        val cols = max(1, (screenWidth / colSpacing).toInt())
-        val horizontalPadding = (screenWidth - (cols * colSpacing)) / 2f + colSpacing / 2f
-        val topPadding = 400f
+        
+        // Reserve space for margins
+        val availableWidth = screenWidth * 0.9f
+        val availableHeight = screenHeight * 0.75f
+        val n = apps.size
+
+        // Calculate optimal hexagon radius to fit N items in available area
+        // Area of hex = ~2.6 * R^2. Total area = availableWidth * availableHeight.
+        val optimalR = sqrt((availableWidth * availableHeight) / (n * 2.598f))
+        
+        // Constrain R so it doesn't get ridiculously large or small
+        val maxRPx = with(density) { 55.dp.toPx() }
+        val minRPx = with(density) { 20.dp.toPx() }
+        val r = optimalR.coerceIn(minRPx, maxRPx)
+        hexRadiusPx = r
+
+        val hexWidth = sqrt(3f) * r
+        val colSpacing = hexWidth
+        val rowSpacing = 1.5f * r
+
+        val cols = max(1, (availableWidth / colSpacing).toInt())
+        val rows = (n + cols - 1) / cols
+
+        val totalGridWidth = cols * colSpacing + colSpacing / 2f
+        val totalGridHeight = (rows - 1) * rowSpacing + 2 * r
+
+        // Center perfectly on screen
+        val startX = (screenWidth - totalGridWidth) / 2f + colSpacing / 2f
+        val startY = (screenHeight - totalGridHeight) / 2f + r
 
         val positions = mutableListOf<Offset>()
         apps.forEachIndexed { index, _ ->
@@ -152,72 +174,60 @@ fun LauncherScreen() {
             val col = index % cols
 
             val xOffset = if (row % 2 == 1) colSpacing / 2f else 0f
-            val x = (col * colSpacing) + xOffset + horizontalPadding
-            val y = row * rowSpacing + topPadding
+            val x = startX + (col * colSpacing) + xOffset
+            val y = startY + (row * rowSpacing)
             positions.add(Offset(x, y))
         }
         appPositions = positions
-
-        val maxY = positions.lastOrNull()?.y ?: 0f
-        maxScroll = max(0f, maxY - screenHeight + topPadding)
-    }
-
-    // Selection & Auto-Scroll logic
-    LaunchedEffect(isAppsVisible, fingerPosition) {
-        if (!isAppsVisible || appPositions.isEmpty()) {
-            selectedIndex = null
-            return@LaunchedEffect
-        }
-
-        // Auto Scroll Loop
-        val screenHeight = context.resources.displayMetrics.heightPixels.toFloat()
-        val edgeThreshold = screenHeight * 0.15f
-        val scrollSpeed = 20f
-
-        if (fingerPosition.y > 0 && fingerPosition.y < edgeThreshold) {
-            scrollY = (scrollY - scrollSpeed).coerceAtLeast(0f)
-        } else if (fingerPosition.y > screenHeight - edgeThreshold) {
-            scrollY = (scrollY + scrollSpeed).coerceAtMost(maxScroll)
-        }
-
-        // Selection Logic
-        var closestIdx = -1
-        var minDist = Float.MAX_VALUE
-        appPositions.forEachIndexed { i, pos ->
-            val screenPos = pos - Offset(0f, scrollY)
-            val dist = (screenPos - fingerPosition).getDistance()
-            if (dist < minDist) {
-                minDist = dist
-                closestIdx = i
-            }
-        }
-        
-        // Select if within a reasonable distance (e.g. hexRadius)
-        if (minDist < hexRadiusPx * 1.5f) {
-            if (selectedIndex != closestIdx) selectedIndex = closestIdx
-        } else {
-            if (selectedIndex != null) selectedIndex = null
-        }
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) {
+            .pointerInput(appPositions, hexRadiusPx) { // Re-bind if positions change
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
-                        fingerPosition = offset
+                        fingerPosition.value = offset
                         isAppsVisible = true
+                        
+                        var closestIdx = -1
+                        var minDist = Float.MAX_VALUE
+                        appPositions.forEachIndexed { i, pos ->
+                            val dist = (pos - offset).getDistance()
+                            if (dist < minDist) {
+                                minDist = dist
+                                closestIdx = i
+                            }
+                        }
+                        selectedIndex.intValue = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
                     },
                     onDrag = { change, _ ->
-                        fingerPosition = change.position
+                        val pos = change.position
+                        fingerPosition.value = pos
                         change.consume()
+                        
+                        // Extremely fast selection calculation without recomposition
+                        var closestIdx = -1
+                        var minDist = Float.MAX_VALUE
+                        appPositions.forEachIndexed { i, p ->
+                            val dist = (p - pos).getDistance()
+                            if (dist < minDist) {
+                                minDist = dist
+                                closestIdx = i
+                            }
+                        }
+                        
+                        val newSelection = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
+                        if (selectedIndex.intValue != newSelection) {
+                            selectedIndex.intValue = newSelection
+                        }
                     },
                     onDragEnd = {
                         isAppsVisible = false
-                        selectedIndex?.let { index ->
-                            apps.getOrNull(index)?.launchIntent?.let { intent ->
+                        val idx = selectedIndex.intValue
+                        if (idx != -1) {
+                            apps.getOrNull(idx)?.launchIntent?.let { intent ->
                                 context.startActivity(intent)
                             }
                         }
@@ -232,16 +242,13 @@ fun LauncherScreen() {
         if (appPositions.isNotEmpty()) {
             Box(modifier = Modifier.fillMaxSize()) {
                 apps.forEachIndexed { index, app ->
-                    val pos = appPositions[index]
-                    val isSelected = index == selectedIndex
-
                     AppItem(
                         app = app,
-                        basePos = pos,
-                        fingerPositionProvider = { fingerPosition },
-                        scrollYProvider = { scrollY },
-                        isAppsVisibleProvider = { isAppsVisible },
-                        isSelectedProvider = { isSelected },
+                        index = index,
+                        basePos = appPositions[index],
+                        fingerPosition = fingerPosition,
+                        isAppsVisible = isAppsVisible,
+                        selectedIndex = selectedIndex,
                         hexRadiusPx = hexRadiusPx
                     )
                 }
@@ -249,27 +256,34 @@ fun LauncherScreen() {
         }
 
         // Top App Name Display
-        val selectedApp = selectedIndex?.let { apps.getOrNull(it) }
-        AnimatedVisibility(
-            visible = isAppsVisible && selectedApp != null,
-            enter = fadeIn(tween(150)),
-            exit = fadeOut(tween(150)),
-            modifier = Modifier.align(Alignment.TopCenter)
-        ) {
-            selectedApp?.let {
-                Text(
-                    text = it.name,
-                    color = Color.White,
-                    fontSize = 36.sp,
-                    fontWeight = FontWeight.Light,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 80.dp, start = 24.dp, end = 24.dp)
-                )
-            }
+        AppNameHeader(apps = apps, selectedIndex = selectedIndex, isVisible = isAppsVisible)
+    }
+}
+
+@Composable
+fun AppNameHeader(apps: List<AppInfo>, selectedIndex: State<Int>, isVisible: Boolean) {
+    val idx = selectedIndex.value
+    val selectedApp = if (idx != -1) apps.getOrNull(idx) else null
+
+    AnimatedVisibility(
+        visible = isVisible && selectedApp != null,
+        enter = fadeIn(tween(150)),
+        exit = fadeOut(tween(150)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        selectedApp?.let {
+            Text(
+                text = it.name,
+                color = Color.White,
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Light,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 80.dp, start = 24.dp, end = 24.dp)
+            )
         }
     }
 }
@@ -277,17 +291,18 @@ fun LauncherScreen() {
 @Composable
 fun AppItem(
     app: AppInfo,
+    index: Int,
     basePos: Offset,
-    fingerPositionProvider: () -> Offset,
-    scrollYProvider: () -> Float,
-    isAppsVisibleProvider: () -> Boolean,
-    isSelectedProvider: () -> Boolean,
+    fingerPosition: State<Offset>,
+    isAppsVisible: Boolean,
+    selectedIndex: State<Int>,
     hexRadiusPx: Float
 ) {
-    val density = LocalDensity.current
+    val isSelected = selectedIndex.value == index
 
+    // Animate scale. Target values resolve during composition when `isSelected` changes.
     val scaleAnim by animateFloatAsState(
-        targetValue = if (isSelectedProvider()) 1.6f else 1f,
+        targetValue = if (isSelected) 1.8f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
         label = "iconScale"
     )
@@ -295,58 +310,52 @@ fun AppItem(
     Box(
         modifier = Modifier
             .graphicsLayer {
-                val fingerPos = fingerPositionProvider()
-                val scrollY = scrollYProvider()
-                val isVisible = isAppsVisibleProvider()
-
-                if (!isVisible) {
+                if (!isAppsVisible) {
                     alpha = 0f
                     scaleX = 0.5f
                     scaleY = 0.5f
                     return@graphicsLayer
                 }
 
-                val screenPos = basePos - Offset(0f, scrollY)
-                val dist = (screenPos - fingerPos).getDistance()
+                val fingerPos = fingerPosition.value
+                val dist = (basePos - fingerPos).getDistance()
 
                 // Spotlight Alpha mask
-                val spotlightRadius = with(density) { 160.dp.toPx() }
+                val spotlightRadius = hexRadiusPx * 4f
                 alpha = if (dist > spotlightRadius) 0f else {
                     val fade = 1f - (dist / spotlightRadius)
-                    // Apply a curve so the drop-off isn't linear but stays bright longer near center
-                    fade * fade * (3f - 2f * fade) 
+                    fade * fade * (3f - 2f * fade) // Smooth curve
                 }
 
                 // Repulsion Physics
-                val repulsionRadius = with(density) { 120.dp.toPx() }
-                val maxRepulsionForce = with(density) { 36.dp.toPx() }
+                val repulsionRadius = hexRadiusPx * 3.5f
+                val maxRepulsionForce = hexRadiusPx * 1.5f
                 
-                var offsetX = screenPos.x
-                var offsetY = screenPos.y
+                var offsetX = basePos.x
+                var offsetY = basePos.y
 
-                if (dist < repulsionRadius && dist > 1f && !isSelectedProvider()) {
+                if (dist < repulsionRadius && dist > 1f && !isSelected) {
                     val force = maxRepulsionForce * (1f - dist / repulsionRadius)
-                    val dirX = (screenPos.x - fingerPos.x) / dist
-                    val dirY = (screenPos.y - fingerPos.y) / dist
+                    val dirX = (basePos.x - fingerPos.x) / dist
+                    val dirY = (basePos.y - fingerPos.y) / dist
                     offsetX += dirX * force
                     offsetY += dirY * force
                 }
 
-                // Center the box over the point
                 translationX = offsetX - hexRadiusPx
                 translationY = offsetY - hexRadiusPx
                 
                 scaleX = scaleAnim
                 scaleY = scaleAnim
             }
-            .size(with(density) { (hexRadiusPx * 2).toDp() }),
+            .size(with(LocalDensity.current) { (hexRadiusPx * 2).toDp() }),
         contentAlignment = Alignment.Center
     ) {
         Image(
             bitmap = app.icon.asImageBitmap(),
             contentDescription = app.name,
             modifier = Modifier
-                .fillMaxSize(0.75f) // Makes the icon slightly smaller than the full hex radius
+                .fillMaxSize(0.7f)
                 .background(Color(0x1AFFFFFF), RoundedCornerShape(14.dp))
                 .padding(6.dp)
         )
