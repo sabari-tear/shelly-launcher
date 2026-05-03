@@ -16,12 +16,20 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -39,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -361,23 +370,50 @@ fun AppNameHeader(apps: List<AppInfo>, selectedIndex: State<Int>, isVisible: Boo
 
     AnimatedVisibility(
         visible = isVisible && selectedApp != null,
-        enter = fadeIn(tween(150)),
-        exit = fadeOut(tween(150)),
+        enter = fadeIn(tween(200)) + expandVertically(tween(200)),
+        exit = fadeOut(tween(200)) + shrinkVertically(tween(200)),
         modifier = Modifier.fillMaxWidth()
     ) {
         selectedApp?.let {
-            Text(
-                text = it.name,
-                color = Color.White,
-                fontSize = 36.sp,
-                fontWeight = FontWeight.Light,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 80.dp, start = 24.dp, end = 24.dp)
-            )
+                    .padding(top = 80.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    modifier = Modifier
+                        .background(
+                            Color(0x26FFFFFF),
+                            RoundedCornerShape(50)
+                        )
+                        .border(
+                            1.dp,
+                            Color(0x33FFFFFF),
+                            RoundedCornerShape(50)
+                        )
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Image(
+                        bitmap = it.icon.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = it.name.uppercase(),
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 2.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }
@@ -466,13 +502,27 @@ fun AppItem(
             .size(with(LocalDensity.current) { (hexRadiusPx * 2).toDp() }),
         contentAlignment = Alignment.Center
     ) {
+        // Draw glow behind icon
+        if (scaleAnim > 1.05f) {
+            val glowAlpha = ((scaleAnim - 1f) / 0.8f).coerceIn(0f, 1f)
+            if (glowAlpha > 0f) {
+                Canvas(modifier = Modifier.fillMaxSize(0.9f)) {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.5f * glowAlpha),
+                                Color.Transparent
+                            )
+                        )
+                    )
+                }
+            }
+        }
+
         Image(
             bitmap = app.icon.asImageBitmap(),
             contentDescription = app.name,
-            modifier = Modifier
-                .fillMaxSize(0.7f)
-                .background(Color(0x1AFFFFFF), RoundedCornerShape(14.dp))
-                .padding(6.dp)
+            modifier = Modifier.fillMaxSize(0.7f)
         )
     }
 }
