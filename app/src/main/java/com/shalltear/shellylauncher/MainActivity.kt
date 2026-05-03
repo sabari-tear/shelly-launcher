@@ -241,7 +241,7 @@ fun LauncherScreen() {
                                     closestIdx = i
                                 }
                             }
-                            if (minDist < hexRadiusPx * 1.5f) {
+                            if (minDist < hexRadiusPx * 0.75f) {
                                 val app = apps.getOrNull(closestIdx)
                                 if (app?.packageName == "com.shelly.lightup") {
                                     isAppsVisible = false
@@ -298,7 +298,7 @@ fun LauncherScreen() {
                                     }
                                 }
 
-                                val newSelection = if (minDist < hexRadiusPx * 1.5f) closestIdx else -1
+                                val newSelection = if (minDist < hexRadiusPx * 0.75f) closestIdx else -1
                                 if (selectedIndex.intValue != newSelection) {
                                     selectedIndex.intValue = newSelection
                                 }
