@@ -262,15 +262,18 @@ fun LauncherScreen() {
                         val up = waitForUpOrCancellation()
                         if (up != null) {
                             var closestIdx = -1
-                            var minDist = Float.MAX_VALUE
+                            var minDistSq = Float.MAX_VALUE
                             appPositions.forEachIndexed { i, pos ->
-                                val dist = (pos - up.position).getDistance()
-                                if (dist < minDist) {
-                                    minDist = dist
+                                val dx = pos.x - up.position.x
+                                val dy = pos.y - up.position.y
+                                val distSq = dx * dx + dy * dy
+                                if (distSq < minDistSq) {
+                                    minDistSq = distSq
                                     closestIdx = i
                                 }
                             }
-                            if (minDist < hexRadiusPx * 0.75f) {
+                            val thresholdSq = (hexRadiusPx * 0.75f) * (hexRadiusPx * 0.75f)
+                            if (minDistSq < thresholdSq) {
                                 val app = apps.getOrNull(closestIdx)
                                 if (app?.packageName == "com.shelly.lightup") {
                                     isAppsVisible = false
@@ -318,16 +321,19 @@ fun LauncherScreen() {
                                 change.consume()
 
                                 var closestIdx = -1
-                                var minDist = Float.MAX_VALUE
+                                var minDistSq = Float.MAX_VALUE
                                 appPositions.forEachIndexed { i, p ->
-                                    val dist = (p - pos).getDistance()
-                                    if (dist < minDist) {
-                                        minDist = dist
+                                    val dx = p.x - pos.x
+                                    val dy = p.y - pos.y
+                                    val distSq = dx * dx + dy * dy
+                                    if (distSq < minDistSq) {
+                                        minDistSq = distSq
                                         closestIdx = i
                                     }
                                 }
 
-                                val newSelection = if (minDist < hexRadiusPx * 0.75f) closestIdx else -1
+                                val thresholdSq = (hexRadiusPx * 0.75f) * (hexRadiusPx * 0.75f)
+                                val newSelection = if (minDistSq < thresholdSq) closestIdx else -1
                                 if (selectedIndex.intValue != newSelection) {
                                     selectedIndex.intValue = newSelection
                                 }
@@ -402,10 +408,13 @@ fun LauncherScreen() {
                         return@graphicsLayer
                     }
                     val fingerPos = fingerPosition.value
-                    val dist = (settingsPos - fingerPos).getDistance()
+                    val dx = settingsPos.x - fingerPos.x
+                    val dy = settingsPos.y - fingerPos.y
+                    val distSq = dx * dx + dy * dy
                     val spotlightRadius = hexRadiusPx * 4f
-                    alpha = if (dist > spotlightRadius) 0f else {
-                        val fade = 1f - (dist / spotlightRadius)
+                    val spotlightRadiusSq = spotlightRadius * spotlightRadius
+                    alpha = if (distSq > spotlightRadiusSq) 0f else {
+                        val fade = 1f - (kotlin.math.sqrt(distSq) / spotlightRadius)
                         fade * fade * (3f - 2f * fade)
                     }
                 }
@@ -503,22 +512,22 @@ fun AppNameHeader(apps: List<AppInfo>, selectedIndex: State<Int>, isVisible: Boo
                             Color(0x33FFFFFF),
                             RoundedCornerShape(50)
                         )
-                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Image(
                         bitmap = it.icon.asImageBitmap(),
                         contentDescription = null,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = it.name.uppercase(),
                         color = Color.White,
-                        fontSize = 18.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 2.sp,
+                        letterSpacing = 1.sp,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -570,30 +579,36 @@ fun AppItem(
                 }
 
                 val fingerPos = fingerPosition.value
-                val dist = (basePos - fingerPos).getDistance()
+                val dx = basePos.x - fingerPos.x
+                val dy = basePos.y - fingerPos.y
+                val distSq = dx * dx + dy * dy
 
                 // 1. Calculate Spotlight Alpha
                 val spotlightRadius = hexRadiusPx * 4f
-                val normalAlpha = if (dist > spotlightRadius) 0f else {
+                val spotlightRadiusSq = spotlightRadius * spotlightRadius
+                val normalAlpha = if (distSq > spotlightRadiusSq) 0f else {
+                    val dist = kotlin.math.sqrt(distSq)
                     val fade = 1f - (dist / spotlightRadius)
                     fade * fade * (3f - 2f * fade) // Smooth curve
                 }
 
                 // 2. Calculate Donut Repulsion Physics
                 val repulsionRadius = hexRadiusPx * 3.5f
+                val repulsionRadiusSq = repulsionRadius * repulsionRadius
                 val maxRepulsionForce = hexRadiusPx * 1.5f
                 
                 var normalOffsetX = basePos.x
                 var normalOffsetY = basePos.y
 
                 // Instead of snapping, use a parabolic curve that is 0 at center, max at half radius, 0 at edge
-                if (dist < repulsionRadius && dist > 1f) {
+                if (distSq < repulsionRadiusSq && distSq > 1f) {
+                    val dist = kotlin.math.sqrt(distSq)
                     val normalizedDist = dist / repulsionRadius
                     // 4 * x * (1 - x) is a perfect parabola peaking at 1 when x = 0.5
                     val force = maxRepulsionForce * 4f * normalizedDist * (1f - normalizedDist)
                     
-                    val dirX = (basePos.x - fingerPos.x) / dist
-                    val dirY = (basePos.y - fingerPos.y) / dist
+                    val dirX = dx / dist
+                    val dirY = dy / dist
                     normalOffsetX += dirX * force
                     normalOffsetY += dirY * force
                 }
