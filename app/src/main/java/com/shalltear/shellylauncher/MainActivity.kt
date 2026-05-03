@@ -103,6 +103,10 @@ fun drawableToBitmap(drawable: Drawable, size: Int = 96): Bitmap {
     return bitmap
 }
 
+fun lerp(start: Float, stop: Float, fraction: Float): Float {
+    return start + (stop - start) * fraction
+}
+
 fun createLightUpIcon(): Bitmap {
     val size = 128
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -398,55 +402,66 @@ fun AppItem(
         label = "iconScale"
     )
 
+    // Smooth transition for Light Up mode
+    val lightUpProgress by animateFloatAsState(
+        targetValue = if (isLightUpMode) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+        label = "lightUpTransition"
+    )
+
     Box(
         modifier = Modifier
             .graphicsLayer {
-                if (!isAppsVisible) {
+                val progress = lightUpProgress
+                
+                // If completely hidden and not lighting up, skip rendering
+                if (!isAppsVisible && progress == 0f) {
                     alpha = 0f
                     scaleX = 0.5f
                     scaleY = 0.5f
                     return@graphicsLayer
                 }
 
-                if (isLightUpMode) {
-                    alpha = 1f
-                    translationX = basePos.x - hexRadiusPx
-                    translationY = basePos.y - hexRadiusPx
-                    scaleX = 1f
-                    scaleY = 1f
-                    return@graphicsLayer
-                }
-
                 val fingerPos = fingerPosition.value
                 val dist = (basePos - fingerPos).getDistance()
 
-                // Spotlight Alpha mask
+                // 1. Calculate Spotlight Alpha
                 val spotlightRadius = hexRadiusPx * 4f
-                alpha = if (dist > spotlightRadius) 0f else {
+                val normalAlpha = if (dist > spotlightRadius) 0f else {
                     val fade = 1f - (dist / spotlightRadius)
                     fade * fade * (3f - 2f * fade) // Smooth curve
                 }
 
-                // Repulsion Physics
+                // 2. Calculate Donut Repulsion Physics
                 val repulsionRadius = hexRadiusPx * 3.5f
                 val maxRepulsionForce = hexRadiusPx * 1.5f
                 
-                var offsetX = basePos.x
-                var offsetY = basePos.y
+                var normalOffsetX = basePos.x
+                var normalOffsetY = basePos.y
 
-                if (dist < repulsionRadius && dist > 1f && !isSelected) {
-                    val force = maxRepulsionForce * (1f - dist / repulsionRadius)
+                // Instead of snapping, use a parabolic curve that is 0 at center, max at half radius, 0 at edge
+                if (dist < repulsionRadius && dist > 1f) {
+                    val normalizedDist = dist / repulsionRadius
+                    // 4 * x * (1 - x) is a perfect parabola peaking at 1 when x = 0.5
+                    val force = maxRepulsionForce * 4f * normalizedDist * (1f - normalizedDist)
+                    
                     val dirX = (basePos.x - fingerPos.x) / dist
                     val dirY = (basePos.y - fingerPos.y) / dist
-                    offsetX += dirX * force
-                    offsetY += dirY * force
+                    normalOffsetX += dirX * force
+                    normalOffsetY += dirY * force
                 }
 
-                translationX = offsetX - hexRadiusPx
-                translationY = offsetY - hexRadiusPx
+                // 3. Interpolate everything based on lightUpProgress
+                alpha = lerp(normalAlpha, 1f, progress)
                 
-                scaleX = scaleAnim
-                scaleY = scaleAnim
+                val finalOffsetX = lerp(normalOffsetX, basePos.x, progress)
+                val finalOffsetY = lerp(normalOffsetY, basePos.y, progress)
+                translationX = finalOffsetX - hexRadiusPx
+                translationY = finalOffsetY - hexRadiusPx
+                
+                val finalScale = lerp(scaleAnim, 1f, progress)
+                scaleX = finalScale
+                scaleY = finalScale
             }
             .size(with(LocalDensity.current) { (hexRadiusPx * 2).toDp() }),
         contentAlignment = Alignment.Center
