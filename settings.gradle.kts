@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Shelly launcher"
 include(":app")
+include(":macrobenchmark")
  
